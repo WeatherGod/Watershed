@@ -2,6 +2,7 @@
 import numpy as np
 from itertools import chain
 
+# Also depends on scipy.ndimage for a caching mechanism
 
 def Watershed_Transform(image, maxDepth, saliency) :
     centers = _find_centers(image)
@@ -123,13 +124,13 @@ def _find_centers(image) :
 
 #       print q, len(centers[q])
     return centers
-    
-
-
 
 
 
 def _find_basins(image, centers, maxDepth, saliency) :
+    # Reset caching
+    _capture._markedSoFar = {}
+
     # Zero for background, -1 for unchecked, positive values for blob number
     basins = UNMARKED * np.ones(image.shape, dtype='i')
 
@@ -232,11 +233,38 @@ def _is_closest(pixel, center, xs, ys) :
 #    return True
 
 
+def _find_boundary(image) :
+    from scipy.ndimage import binary_dilation, binary_erosion
+    return image - binary_erosion(image)
+
 def _capture(image, basins, center, basinNumber, hlevel, saliency, foothills) :
-    neighbors = [center.position]
+
 
     foothill = []
-    markedSoFar = []
+    markedSoFar = _capture._markedSoFar.get(center.position, [])
+
+
+    # Caching mechanism to reduce the amount of redundant
+    # processing when a center is reconsidered
+    if len(markedSoFar) == 0 :
+        neighbors = [center.position]
+    else :
+        # Just to make sure I am not stepping on any other
+        # basin's toes.
+        tempy = np.zeros(image.shape, dtype=bool)
+        tempy[zip(*markedSoFar)] = True
+        edge = _find_boundary(tempy)
+
+        # Rebuild markedSoFar to be set of points before the edge contour
+        # this is a conservative caching mechanism in order to avoid assuming
+        # that edge points has not been declared for someone else.
+        markedSoFar = [tuple(pt) for pt in np.argwhere(tempy - edge) if
+                       basins[tuple(pt)] == UNMARKED]
+        del tempy
+        neighbors = [tuple(pt) for pt in np.argwhere(edge) if
+                     basins[tuple(pt)] == UNMARKED]
+
+        basins[zip(*markedSoFar)] = basinNumber
 
     # Is this basin eligable to be considered again?
     # In other words, if the basin-growing did not
@@ -286,12 +314,14 @@ def _capture(image, basins, center, basinNumber, hlevel, saliency, foothills) :
         basin.extremum = center
         basin.support_region = Support_Region()
         basin.support_region.pixels = markedSoFar
+        _capture._markedSoFar.pop(center.position, None)
     elif willBeConsideredAgain :
         # Basin has not been captured
         # Now I need to undo what I have done...
 #        for p in markedSoFar :
 #            basins[p] = UNMARKED
         basins[zip(*markedSoFar)] = UNMARKED
+        _capture._markedSoFar[center.position] = markedSoFar
     else :
         #print "Not being deferred!"
         # So, it is not big enough, and it won't be considered again,
@@ -299,29 +329,34 @@ def _capture(image, basins, center, basinNumber, hlevel, saliency, foothills) :
 #        for p in markedSoFar :
 #            basins[p] = GLOBBED
         basins[zip(*markedSoFar)] = GLOBBED
+        _capture._markedSoFar.pop(center.position, None)
 
     return (basin, (bigEnough or not willBeConsideredAgain))
 
+# State variable for _capture() for caching.
+_capture._markedSoFar = {}
+
 if __name__ == '__main__' :
-    from RandomImage import RandomImage
-    np.random.seed(32)
-    i = RandomImage(85, 50, 95, (300, 300))
+    #from RandomImage import RandomImage
+    #np.random.seed(32)
+    #i = RandomImage(200, 50, 95, (1000, 1000))
 
-    #from scipy.ndimage import imread
-    #i = imread("/home/bvr/SatData/2011.07.01.12.00.png")
-    #i = i[:i.shape[0]/2, :i.shape[1]/2]
+    from scipy.ndimage import imread, gaussian_filter
+    i = imread("/home/bvr/SatData/2011.07.01.12.00.png")
+    i = gaussian_filter(i, 1)[300:800, 300:i.shape[1]/2]
+    print "Shape:", i.shape, "  DType:", i.dtype
 
-    #globs, basins = Watershed_Transform(i, 40, 1000)
-    #print "Glob Cnt:", len(globs)
-    import cProfile
-    cProfile.run("Watershed_Transform(i, 40, 1000)", "watershed_lg3_profile")
+    globs, basins = Watershed_Transform(i, 5, 250)
+    print "Glob Cnt:", len(globs)
+    #import cProfile
+    #cProfile.run("Watershed_Transform(i, 40, 1000)", "watershed_lg5_profile")
 
 
-    #basins = np.ma.masked_array(basins, mask=(basins <= 0))
-    #import matplotlib.pyplot as plt
-    #fig = plt.figure()
-    #ax = fig.add_subplot(1, 2, 1)
-    #ax.imshow(i, cmap=plt.gray(), interpolation='none')
-    #ax = fig.add_subplot(1, 2, 2)
-    #ax.imshow(basins, vmin=0, cmap=plt.prism(), interpolation='none')
-    #plt.show()
+    basins = np.ma.masked_array(basins, mask=(basins <= 0))
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 2, 1)
+    ax.imshow(i, cmap=plt.gray(), interpolation='none')
+    ax = fig.add_subplot(1, 2, 2)
+    ax.imshow(basins, vmin=0, cmap=plt.prism(), interpolation='none')
+    plt.show()
